@@ -1,0 +1,159 @@
+#Импорт необходимых библиотек и модулей.
+#Скачивание и распаковка архивного файла с датасетом.
+#Получение списка классов из директорий датасета.
+#Создание пустых массивов для изображений и меток классов.
+#Загрузка изображений и создание массива данных.
+#Разделение данных на обучающую и тестовую выборки.
+#Преобразование меток классов в one-hot encoding.
+#Изменение размера обучающих и тестовых изображений.
+#Создание модели автокодировщика.
+#Определение слоев энкодера.
+#Определение слоев декодера.
+#Определение модели автокодировщика.
+#Компиляция модели автокодировщика.
+#Обучение модели автокодировщика.
+#Определение функции для вывода изображений по классам.
+#Вывод изображений по классам для обучающего датасета.
+#Вывод изображений по классам для тестового датасета.
+
+import os
+import gdown
+import zipfile
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+from sklearn.model_selection import train_test_split
+from tensorflow import keras
+from tensorflow.keras.layers import Input, Dense, Flatten, Reshape, concatenate, Conv2D, MaxPooling2D, UpSampling2D
+from tensorflow.keras.models import Model
+from sklearn.neighbors import NearestNeighbors
+
+# Ссылка для скачивания архивного файла с датасетом
+dataset_url = 'https://drive.google.com/uc?id=1ZdQ1dAGWOL8lTK73MQV1UQf-2S8BKcTq'
+
+# Путь для сохранения архивного файла
+zip_file_path = 'processed_extended_dataset.zip'
+
+# Скачивание архивного файла
+gdown.download(dataset_url, zip_file_path, quiet=False)
+
+# Распаковка архивного файла
+with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+    zip_ref.extractall('dataset')
+
+# Удаление архивного файла
+os.remove(zip_file_path)
+
+# Путь к распакованному датасету
+dataset_path = 'dataset'
+
+# Получение списка классов из директорий датасета
+class_list = sorted(os.listdir(dataset_path))
+num_classes = len(class_list)
+
+# Создание пустых массивов для изображений и меток классов
+image_array = []
+data_labels = []
+
+# Загрузка изображений и создание массива данных
+for class_label, class_name in enumerate(class_list):
+    class_dir = os.path.join(dataset_path, class_name)
+    image_files = os.listdir(class_dir)
+    num_images = len(image_files)
+
+    for i in range(num_images):
+        image_path = os.path.join(class_dir, image_files[i])
+        try:
+            image = Image.open(image_path).convert("RGB")
+            image = image.resize((64, 64))
+            image_array.append(np.array(image))
+            data_labels.append(class_label)
+        except Exception as e:
+            print(f'Ошибка при обработке изображения {image_path}: {str(e)}')
+
+image_array = np.array(image_array)
+data_labels = np.array(data_labels)
+
+# Разделение данных на обучающую и тестовую выборки
+x_train, x_test, y_train, y_test = train_test_split(image_array, data_labels, test_size=0.2, stratify=data_labels, random_state=42)
+
+# Преобразование меток классов в one-hot encoding
+y_train_cat = keras.utils.to_categorical(y_train, num_classes)
+y_test_cat = keras.utils.to_categorical(y_test, num_classes)
+
+# Изменение размера обучающих и тестовых изображений
+x_train_resized = np.array([np.array(Image.fromarray(img).resize((32, 32))) for img in x_train])
+x_test_resized = np.array([np.array(Image.fromarray(img).resize((32, 32))) for img in x_test])
+
+# Преобразование значений пикселей в диапазон [0, 1]
+x_train_resized = x_train_resized.astype('float32') / 255.
+x_test_resized = x_test_resized.astype('float32') / 255.
+
+# Создание модели автокодировщика
+IMG_HEIGHT = 32  # Define the image height
+IMG_WIDTH = 32  # Define the image width
+CHANELS = 3  # Define the number of channels
+latent_dim = 64  # Define the dimension of the latent space
+
+input_img = Input(shape=(IMG_HEIGHT, IMG_WIDTH, CHANELS))
+class_label = Input(shape=(num_classes,))
+
+# Encoder layers
+x = Conv2D(32, (3, 3), activation='relu', padding='same')(input_img)
+x = MaxPooling2D((2, 2), padding='same')(x)
+x = Conv2D(64, (3, 3), activation='relu', padding='same')(x)
+x = MaxPooling2D((2, 2), padding='same')(x)
+x = Conv2D(128, (3, 3), activation='relu', padding='same')(x)
+x = MaxPooling2D((2, 2), padding='same')(x)
+x = Flatten()(x)
+x = concatenate([x, class_label])
+x = Dense(512, activation='relu')(x)
+x = Dense(256, activation='relu')(x)
+encoded = Dense(latent_dim, activation='relu')(x)
+
+# Decoder layers
+x = Dense(256, activation='relu')(encoded)
+x = Dense(512, activation='relu')(x)
+x = Reshape((4, 4, 32))(x)
+x = Conv2D(128, (3, 3), activation='relu', padding='same')(x)
+x = UpSampling2D((2, 2))(x)
+x = Conv2D(64, (3, 3), activation='relu', padding='same')(x)
+x = UpSampling2D((2, 2))(x)
+x = Conv2D(32, (3, 3), activation='relu', padding='same')(x)
+x = UpSampling2D((2, 2))(x)
+x = Conv2D(CHANELS, (3, 3), activation='sigmoid', padding='same')(x)
+decoded = x
+
+# Define the autoencoder model
+autoencoder = Model([input_img, class_label], decoded)
+
+# Compile the autoencoder model
+autoencoder.compile(optimizer='adam', loss='mse')
+
+# Train the autoencoder model
+autoencoder.fit([x_train_resized, y_train_cat], x_train_resized, epochs=10, batch_size=64, validation_data=([x_test_resized, y_test_cat], x_test_resized))
+
+# Функция для вывода изображений по классам
+def show_images_per_class(images, labels, class_list):
+    num_classes = len(class_list)
+    num_images_per_class = 15
+
+    for class_label, class_name in enumerate(class_list):
+        class_indices = np.where(labels == class_label)[0][:num_images_per_class]
+
+        plt.figure(figsize=(10, 2))
+        plt.suptitle(f'Class: {class_name}', fontsize=14, fontweight='bold')
+
+        for i, idx in enumerate(class_indices):
+            plt.subplot(1, num_images_per_class, i+1)
+            plt.axis('off')
+            plt.imshow(images[idx])
+            plt.title(f'Image {i+1}')
+
+    plt.show()
+
+# Вывод изображений по классам для обучающего датасета
+show_images_per_class(x_train_resized, y_train, class_list)
+
+# Вывод изображений по классам для тестового датасета
+show_images_per_class(x_test_resized, y_test, class_list)
